@@ -52,7 +52,7 @@ parser.add_argument('-b', '--batch-size', default=256, type=int,
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument('--lr', '--learning-rate', default=0.03, type=float,
                     metavar='LR', help='initial learning rate', dest='lr')
-parser.add_argument('--schedule', default=[120, 160], nargs='*', type=int,
+parser.add_argument('--schedule', default=[700], nargs='*', type=int,
                     help='learning rate schedule (when to drop lr by 10x)')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum of SGD solver')
@@ -102,6 +102,8 @@ parser.add_argument('--cos', action='store_true',
 # options for fewshot
 # parser.add_argument('--image_size', default=84, type=int, help='image_size')
 parser.add_argument('--gpu_number', default=0, type=int, help='gpu number')
+parser.add_argument('--freq_save', default=10, type=int, help='frequency for saving model')
+parser.add_argument('--save_name', default='', help='save_name')
 
 def add_parser(args):
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu_number)
@@ -125,21 +127,24 @@ def add_parser(args):
 
     is_mlp = {True:'_mlp', False:''}[args.mlp]
     args.checkpoint_dir = os.path.join('./checkpoints', 
-                    f"{dataset_name}_{args.arch}_lr{args.lr}_b{args.batch_size}_k{args.moco_k}{is_mlp}")
+                    f'{args.save_name}{dataset_name}_{args.arch}_' + 
+                    f'lr{args.lr}_b{args.batch_size}_k{args.moco_k}{is_mlp}')
 
     if not os.path.isdir(args.checkpoint_dir):
             os.mkdir(args.checkpoint_dir)
-
-    with open(os.path.join(args.checkpoint_dir, 'log.txt'), 'w') as f:
-        print(args, file=f)
-        print('{0.year:04}{0.month:02}{0.day:02}_{0.hour:02}{0.minute:02}{0.second:02}'.format(datetime.now()), file=f)
-
+    args.logfile = os.path.join(args.checkpoint_dir, 'log.txt')
+    with open(args.logfile, 'w') as f:
+        for key in args.__dict__.keys():
+            print(f'{key} : {args.__dict__[key]}', file=f)
+        print('Start time : {0.year:04}-{0.month:02}-{0.day:02} {0.hour:02}:{0.minute:02}:{0.second:02}'.format(
+                datetime.now()), file=f)
+    
     return args
 
 def main():
     # args= parser.parse_args('miniImagenet \
-    #                          -a resnet34 --lr 0.03 -b 2 --moco-k 16384 --mlp   \
-    #                          --dist-url 52 --gpu_number 0    \
+    #                          -a resnet34 --lr 0.03 -b 256 --moco-k 16384    \
+    #                          --dist-url 52 --gpu_number 0 --save_name debug_ --epochs 2 \
     #                         '.split())                             
     args= parser.parse_args()
     args = add_parser(args)
@@ -244,7 +249,6 @@ def main_worker(gpu, ngpus_per_node, args):
     # optionally resume from a checkpoint
     if args.resume:
         if os.path.isfile(args.resume):
-            print("=> loading checkpoint '{}'".format(args.resume))
             if args.gpu is None:
                 checkpoint = torch.load(args.resume)
             else:
@@ -254,8 +258,11 @@ def main_worker(gpu, ngpus_per_node, args):
             args.start_epoch = checkpoint['epoch']
             model.load_state_dict(checkpoint['state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
-            print("=> loaded checkpoint '{}' (epoch {})"
-                  .format(args.resume, checkpoint['epoch']))
+            message = f"=> loaded checkpoint '{args.resume}' " + \
+                  f"(epoch {checkpoint['epoch']}, lr: {optimizer.param_groups[0]['lr']})"
+            print(message)
+            with open(args.logfile, 'a') as f:
+                print(message, file=f)
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
 
@@ -301,19 +308,21 @@ def main_worker(gpu, ngpus_per_node, args):
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True)
-
-    for epoch in range(args.start_epoch, args.epochs):
+    
+    max_top1Acc = 0.0
+    for epoch in range(args.start_epoch, args.start_epoch+args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
         adjust_learning_rate(optimizer, epoch, args)
 
         # train for one epoch
-        avg_accTop1 = train(train_loader, model, criterion, optimizer, epoch, args)
-
+        avgloss, accTop1, accTop5 = train(train_loader, model, criterion, optimizer, epoch, args)
+        with open(args.logfile, 'a') as f:
+            print(f'{avgloss:.4f}\t{accTop1:.2f}\t{accTop5:.2f}', file=f)
         # if not args.multiprocessing_distributed or (args.multiprocessing_distributed
         #         and args.rank % ngpus_per_node == 0):
-        if (epoch+1) % 10 == 0:
-            filename = os.path.join(args.checkpoint_dir, f'checkpoint_{epoch+1:04d}_Top1_{avg_accTop1:.2f}.pth.tar')
+        if (epoch+1) % args.freq_save == 0:
+            filename = os.path.join(args.checkpoint_dir, f'checkpoint_{epoch+1:04d}_Top1_{accTop1:.2f}.pth.tar')
             save_checkpoint({
                 'epoch': epoch + 1,
                 'arch': args.arch,
@@ -321,17 +330,32 @@ def main_worker(gpu, ngpus_per_node, args):
                 'optimizer' : optimizer.state_dict(),
             }, is_best=False, filename=filename)
 
+        if max_top1Acc < accTop1:
+            max_top1Acc = accTop1
+            filename = os.path.join(args.checkpoint_dir, f'checkpoint_best_model.pth.tar')
+            save_checkpoint({
+                'epoch': epoch + 1,
+                'arch': args.arch,
+                'state_dict': model.state_dict(),
+                'optimizer' : optimizer.state_dict(),
+            }, is_best=False, filename=filename)
+    with open(args.logfile, 'a') as f:
+        print('End time : {0.year:04}-{0.month:02}-{0.day:02} {0.hour:02}:{0.minute:02}:{0.second:02}'.format(
+                datetime.now()), file=f)
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
+    """
+    Return: Averages of loss, top1 accuracy, top5 accuracy
+    """
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
-    losses = AverageMeter('Loss', ':.4e')
+    losses = AverageMeter('Loss', ':.4f')
     top1 = AverageMeter('Acc@1', ':6.2f')
     top5 = AverageMeter('Acc@5', ':6.2f')
     progress = ProgressMeter(
         len(train_loader),
         [batch_time, data_time, losses, top1, top5],
-        prefix="Epoch: [{}]".format(epoch))
+        prefix=f"Epoch: [{epoch+1}]")
 
     # switch to train mode
     model.train()
@@ -367,7 +391,8 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
         if i % args.print_freq == 0:
             progress.display(i)
-    return top1.avg
+
+    return losses.avg, top1.avg, top5.avg
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
