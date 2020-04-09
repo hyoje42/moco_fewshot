@@ -25,6 +25,8 @@ import torchvision.models as models
 import moco.loader
 import moco.builder
 
+from datetime import datetime
+
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(models.__dict__[name]))
@@ -37,9 +39,9 @@ parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet50',
                     help='model architecture: ' +
                         ' | '.join(model_names) +
                         ' (default: resnet50)')
-parser.add_argument('-j', '--workers', default=32, type=int, metavar='N',
+parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 32)')
-parser.add_argument('--epochs', default=200, type=int, metavar='N',
+parser.add_argument('--epochs', default=1000, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
@@ -61,9 +63,9 @@ parser.add_argument('-p', '--print-freq', default=10, type=int,
                     metavar='N', help='print frequency (default: 10)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
-parser.add_argument('--world-size', default=-1, type=int,
+parser.add_argument('--world-size', default=1, type=int,
                     help='number of nodes for distributed training')
-parser.add_argument('--rank', default=-1, type=int,
+parser.add_argument('--rank', default=0, type=int,
                     help='node rank for distributed training')
 parser.add_argument('--dist-url', default='tcp://224.66.41.62:23456', type=str,
                     help='url used to set up distributed training')
@@ -73,7 +75,7 @@ parser.add_argument('--seed', default=None, type=int,
                     help='seed for initializing training. ')
 parser.add_argument('--gpu', default=None, type=int,
                     help='GPU id to use.')
-parser.add_argument('--multiprocessing-distributed', action='store_true',
+parser.add_argument('--multiprocessing-distributed', default=True,
                     help='Use multi-processing distributed training to launch '
                          'N processes per node, which has N GPUs. This is the '
                          'fastest way to use PyTorch for either single node or '
@@ -97,9 +99,51 @@ parser.add_argument('--aug-plus', action='store_true',
 parser.add_argument('--cos', action='store_true',
                     help='use cosine lr schedule')
 
+# options for fewshot
+# parser.add_argument('--image_size', default=84, type=int, help='image_size')
+parser.add_argument('--gpu_number', default=0, type=int, help='gpu number')
+
+def add_parser(args):
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu_number)
+
+    if 'localhost' not in args.dist_url:
+       args.dist_url = f'tcp://localhost:1{int(args.dist_url):04d}' 
+
+    DATA_PATH = './Dataset/'
+    if DATA_PATH not in args.data:
+        args.data = os.path.join(DATA_PATH, args.data)
+
+    if 'miniImagenet' in args.data:
+        args.image_size = 84
+        dataset_name = 'miniImagenet'
+    elif 'CUB' in args.data:
+        args.image_size = 84
+        dataset_name = 'CUB'
+    elif 'cifar' in args.data:
+        args.image_size = 32
+        dataset_name = 'cifar'
+
+    is_mlp = {True:'_mlp', False:''}[args.mlp]
+    args.checkpoint_dir = os.path.join('./checkpoints', 
+                    f"{dataset_name}_{args.arch}_lr{args.lr}_b{args.batch_size}_k{args.moco_k}{is_mlp}")
+
+    if not os.path.isdir(args.checkpoint_dir):
+            os.mkdir(args.checkpoint_dir)
+
+    with open(os.path.join(args.checkpoint_dir, 'log.txt'), 'w') as f:
+        print(args, file=f)
+        print('{0.year:04}{0.month:02}{0.day:02}_{0.hour:02}{0.minute:02}{0.second:02}'.format(datetime.now()), file=f)
+
+    return args
 
 def main():
-    args = parser.parse_args()
+    # args= parser.parse_args('miniImagenet \
+    #                          -a resnet34 --lr 0.03 -b 2 --moco-k 16384 --mlp   \
+    #                          --dist-url 52 --gpu_number 0    \
+    #                         '.split())                             
+    args= parser.parse_args()
+    args = add_parser(args)
+    print(args)
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -131,6 +175,7 @@ def main():
     else:
         # Simply call main_worker function
         main_worker(args.gpu, ngpus_per_node, args)
+    # main_worker(args.gpu, ngpus_per_node, args)
 
 
 def main_worker(gpu, ngpus_per_node, args):
@@ -217,13 +262,13 @@ def main_worker(gpu, ngpus_per_node, args):
     cudnn.benchmark = True
 
     # Data loading code
-    traindir = os.path.join(args.data, 'train')
+    traindir = os.path.join(args.data, 'base')
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
     if args.aug_plus:
         # MoCo v2's aug: similar to SimCLR https://arxiv.org/abs/2002.05709
         augmentation = [
-            transforms.RandomResizedCrop(224, scale=(0.2, 1.)),
+            transforms.RandomResizedCrop(args.image_size, scale=(0.2, 1.)),
             transforms.RandomApply([
                 transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)  # not strengthened
             ], p=0.8),
@@ -236,7 +281,7 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         # MoCo v1's aug: the same as InstDisc https://arxiv.org/abs/1805.01978
         augmentation = [
-            transforms.RandomResizedCrop(224, scale=(0.2, 1.)),
+            transforms.RandomResizedCrop(args.image_size, scale=(0.2, 1.)),
             transforms.RandomGrayscale(p=0.2),
             transforms.ColorJitter(0.4, 0.4, 0.4, 0.4),
             transforms.RandomHorizontalFlip(),
@@ -263,16 +308,18 @@ def main_worker(gpu, ngpus_per_node, args):
         adjust_learning_rate(optimizer, epoch, args)
 
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch, args)
+        avg_accTop1 = train(train_loader, model, criterion, optimizer, epoch, args)
 
-        if not args.multiprocessing_distributed or (args.multiprocessing_distributed
-                and args.rank % ngpus_per_node == 0):
+        # if not args.multiprocessing_distributed or (args.multiprocessing_distributed
+        #         and args.rank % ngpus_per_node == 0):
+        if (epoch+1) % 10 == 0:
+            filename = os.path.join(args.checkpoint_dir, f'checkpoint_{epoch+1:04d}_Top1_{avg_accTop1:.2f}.pth.tar')
             save_checkpoint({
                 'epoch': epoch + 1,
                 'arch': args.arch,
                 'state_dict': model.state_dict(),
                 'optimizer' : optimizer.state_dict(),
-            }, is_best=False, filename='checkpoint_{:04d}.pth.tar'.format(epoch))
+            }, is_best=False, filename=filename)
 
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
@@ -320,9 +367,11 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
         if i % args.print_freq == 0:
             progress.display(i)
+    return top1.avg
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
+    print(f'Save {filename}')
     torch.save(state, filename)
     if is_best:
         shutil.copyfile(filename, 'model_best.pth.tar')

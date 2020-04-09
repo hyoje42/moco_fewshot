@@ -1,0 +1,10 @@
+
+*/__pycache__/*
+__pycache__/*
+*.pyc
+*.ipynb
+*.sh
+.vscode/
+checkpoints/
+Dataset/
+Dataset

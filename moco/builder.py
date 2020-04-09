@@ -25,7 +25,7 @@ class MoCo(nn.Module):
         # num_classes is the output fc dimension
         self.encoder_q = base_encoder(num_classes=dim)
         self.encoder_k = base_encoder(num_classes=dim)
-
+        kk = base_encoder(num_classes=dim)
         if mlp:  # hack: brute-force replacement
             dim_mlp = self.encoder_q.fc.weight.shape[1]
             self.encoder_q.fc = nn.Sequential(nn.Linear(dim_mlp, dim_mlp), nn.ReLU(), self.encoder_q.fc)
@@ -61,6 +61,8 @@ class MoCo(nn.Module):
 
         # replace the keys at ptr (dequeue and enqueue)
         self.queue[:, ptr:ptr + batch_size] = keys.T
+        # keys: (2*128)
+        # self.queue[:, ptr:ptr + batch_size] = keys.permute(1, 0)    # pytorch version < 1.4.0
         ptr = (ptr + batch_size) % self.K  # move pointer
 
         self.queue_ptr[0] = ptr
