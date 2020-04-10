@@ -136,15 +136,14 @@ def add_parser(args):
     with open(args.logfile, 'w') as f:
         for key in args.__dict__.keys():
             print(f'{key} : {args.__dict__[key]}', file=f)
-        print('Start time : {0.year:04}-{0.month:02}-{0.day:02} {0.hour:02}:{0.minute:02}:{0.second:02}'.format(
-                datetime.now()), file=f)
+        print(f'Start time : {datetime.now():%Y-%m-%d} {datetime.now():%H:%M:%S}', file=f)
     
     return args
 
 def main():
     # args= parser.parse_args('miniImagenet \
     #                          -a resnet34 --lr 0.03 -b 256 --moco-k 16384    \
-    #                          --dist-url 52 --gpu_number 0 --save_name debug_ --epochs 2 \
+    #                          --dist-url 52 --gpu_number 0 --save_name debug_ --epochs 2 --resume /data/Checkpoints/fewshot/MoCo/miniImagenet_resnet34_lr0.03_b256_k16384/checkpoint_best_model.pth.tar\
     #                         '.split())                             
     args= parser.parse_args()
     args = add_parser(args)
@@ -340,8 +339,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 'optimizer' : optimizer.state_dict(),
             }, is_best=False, filename=filename)
     with open(args.logfile, 'a') as f:
-        print('End time : {0.year:04}-{0.month:02}-{0.day:02} {0.hour:02}:{0.minute:02}:{0.second:02}'.format(
-                datetime.now()), file=f)
+        print(f'End time : {datetime.now():%Y-%m-%d} {datetime.now():%H:%M:%S}', file=f)
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
     """
